@@ -8,7 +8,7 @@ Users can upload lecture notes, slides, or PDFs, and SkillSlide automatically br
 
 ## Receipt OCR prototype
 
-This repository also contains a lightweight prototype for receipt OCR. The app lets you upload a receipt image, extracts the text with Tesseract, parses items, and stores data (store name, date, total, line items) in SQLite. You can edit receipt fields and item lines directly in the UI to keep the database up to date.
+This repository also contains a lightweight prototype for receipt OCR. The app lets you upload a receipt image, extracts the text with Tesseract, parses items, and stores data (store name, date, total, line items) in SQLite. You can edit receipt fields, add/remove items, and export data to CSV directly in the UI to keep the database up to date.
 
 ### Quick start
 

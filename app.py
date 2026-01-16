@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import csv
 import os
 import re
 import sqlite3
 from datetime import datetime
+from io import StringIO
 from pathlib import Path
 
-from flask import Flask, redirect, render_template, request, url_for
+from flask import Flask, Response, redirect, render_template, request, url_for
 from PIL import Image
 import pytesseract
 
@@ -71,6 +73,7 @@ def init_db() -> None:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("PRAGMA foreign_keys = ON;")
         conn.executescript(SCHEMA)
 
 
@@ -109,11 +112,15 @@ def parse_receipt_text(text: str) -> ParsedReceipt:
 
         line_total = parse_money(money_values[-1])
         price = parse_money(money_values[-2]) if len(money_values) > 1 else line_total
+        quantity_match = re.search(r"(?P<quantity>\d+[.,]?\d*)\s*[xх*]\s*\d+[.,]\d{2}", line.lower())
+        quantity = None
+        if quantity_match:
+            quantity = float(quantity_match.group("quantity").replace(",", "."))
         name = MONEY_PATTERN.sub("", line)
         name = re.sub(r"\s{2,}", " ", name).strip(" -")
         if not name:
             continue
-        receipt.items.append(ReceiptItem(name=name, quantity=None, price=price, line_total=line_total))
+        receipt.items.append(ReceiptItem(name=name, quantity=quantity, price=price, line_total=line_total))
 
     return receipt
 
@@ -192,6 +199,12 @@ def fetch_receipt(receipt_id: int) -> dict | None:
     return data
 
 
+def parse_optional_number(value: str | None) -> float | None:
+    if value is None or value == "":
+        return None
+    return float(value.replace(",", "."))
+
+
 @app.route("/")
 def index() -> str:
     receipts = fetch_receipts()
@@ -251,11 +264,6 @@ def update_item(receipt_id: int, item_id: int) -> str:
     price = request.form.get("price") or None
     line_total = request.form.get("line_total") or None
 
-    def parse_optional(value: str | None) -> float | None:
-        if value is None or value == "":
-            return None
-        return float(value.replace(",", "."))
-
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute(
             """
@@ -265,9 +273,9 @@ def update_item(receipt_id: int, item_id: int) -> str:
             """,
             (
                 name,
-                parse_optional(quantity),
-                parse_optional(price),
-                parse_optional(line_total),
+                parse_optional_number(quantity),
+                parse_optional_number(price),
+                parse_optional_number(line_total),
                 item_id,
                 receipt_id,
             ),
@@ -275,6 +283,81 @@ def update_item(receipt_id: int, item_id: int) -> str:
         conn.commit()
 
     return redirect(url_for("receipt_detail", receipt_id=receipt_id))
+
+
+@app.route("/receipt/<int:receipt_id>/items/add", methods=["POST"])
+def add_item(receipt_id: int) -> str:
+    name = request.form.get("name") or "Новый товар"
+    quantity = request.form.get("quantity") or None
+    price = request.form.get("price") or None
+    line_total = request.form.get("line_total") or None
+
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            """
+            INSERT INTO items (receipt_id, name, quantity, price, line_total)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                receipt_id,
+                name,
+                parse_optional_number(quantity),
+                parse_optional_number(price),
+                parse_optional_number(line_total),
+            ),
+        )
+        conn.commit()
+
+    return redirect(url_for("receipt_detail", receipt_id=receipt_id))
+
+
+@app.route("/receipt/<int:receipt_id>/items/<int:item_id>/delete", methods=["POST"])
+def delete_item(receipt_id: int, item_id: int) -> str:
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            "DELETE FROM items WHERE id = ? AND receipt_id = ?",
+            (item_id, receipt_id),
+        )
+        conn.commit()
+    return redirect(url_for("receipt_detail", receipt_id=receipt_id))
+
+
+@app.route("/receipt/<int:receipt_id>/delete", methods=["POST"])
+def delete_receipt(receipt_id: int) -> str:
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("DELETE FROM items WHERE receipt_id = ?", (receipt_id,))
+        conn.execute("DELETE FROM receipts WHERE id = ?", (receipt_id,))
+        conn.commit()
+    return redirect(url_for("index"))
+
+
+@app.route("/receipt/<int:receipt_id>/export")
+def export_receipt(receipt_id: int) -> Response:
+    receipt = fetch_receipt(receipt_id)
+    if not receipt:
+        return redirect(url_for("index"))
+
+    buffer = StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(["store_name", "purchase_date", "total", "item_name", "quantity", "price", "line_total"])
+    for item in receipt["items"]:
+        writer.writerow(
+            [
+                receipt["store_name"],
+                receipt.get("purchase_date") or "",
+                receipt.get("total") or "",
+                item.get("name") or "",
+                item.get("quantity") or "",
+                item.get("price") or "",
+                item.get("line_total") or "",
+            ]
+        )
+    csv_body = buffer.getvalue()
+    return Response(
+        csv_body,
+        mimetype="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=receipt_{receipt_id}.csv"},
+    )
 
 
 if __name__ == "__main__":

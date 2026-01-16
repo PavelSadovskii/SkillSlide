@@ -29,6 +29,13 @@ body {
   margin-bottom: 24px;
 }
 
+.header-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+}
+
 .header h1 {
   margin: 0 0 8px;
   font-size: 28px;
@@ -62,7 +69,9 @@ body {
 }
 
 .primary,
-.secondary {
+.secondary,
+.danger,
+.ghost {
   border: none;
   padding: 10px 18px;
   border-radius: 10px;
@@ -82,6 +91,17 @@ body {
 .secondary {
   background: #e2e8f0;
   color: #1f2933;
+}
+
+.danger {
+  background: #ef4444;
+  color: #ffffff;
+}
+
+.ghost {
+  background: transparent;
+  color: #52606d;
+  border: 1px solid #d9e2ec;
 }
 
 .receipt-list {
@@ -141,7 +161,25 @@ body {
   gap: 12px;
 }
 
+.item-entry {
+  display: grid;
+  gap: 8px;
+}
+
 .item-row {
+  display: grid;
+  grid-template-columns: 2fr repeat(3, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+}
+
+.item-delete {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.item-add {
+  margin-top: 16px;
   display: grid;
   grid-template-columns: 2fr repeat(3, 1fr) auto;
   gap: 12px;
@@ -169,6 +207,10 @@ body {
   }
 
   .item-row {
+    grid-template-columns: 1fr;
+  }
+
+  .item-add {
     grid-template-columns: 1fr;
   }
 }

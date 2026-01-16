@@ -13,7 +13,13 @@
         <h1>{{ receipt.store_name }}</h1>
         <p>Детали распознанного чека и возможность корректировки данных.</p>
       </div>
-      <a class="secondary" href="{{ url_for('index') }}">Назад к списку</a>
+      <div class="header-actions">
+        <a class="secondary" href="{{ url_for('export_receipt', receipt_id=receipt.id) }}">Экспорт CSV</a>
+        <form action="{{ url_for('delete_receipt', receipt_id=receipt.id) }}" method="post">
+          <button class="danger" type="submit">Удалить чек</button>
+        </form>
+        <a class="secondary" href="{{ url_for('index') }}">Назад к списку</a>
+      </div>
     </header>
 
     <section class="card">
@@ -40,18 +46,30 @@
       {% if receipt.items %}
         <div class="items">
           {% for item in receipt.items %}
-            <form class="item-row" action="{{ url_for('update_item', receipt_id=receipt.id, item_id=item.id) }}" method="post">
-              <input type="text" name="name" value="{{ item.name }}" />
-              <input type="text" name="quantity" value="{{ item.quantity or '' }}" placeholder="Кол-во" />
-              <input type="text" name="price" value="{{ item.price or '' }}" placeholder="Цена" />
-              <input type="text" name="line_total" value="{{ item.line_total or '' }}" placeholder="Сумма" />
-              <button class="secondary" type="submit">Обновить</button>
-            </form>
+            <div class="item-entry">
+              <form class="item-row" action="{{ url_for('update_item', receipt_id=receipt.id, item_id=item.id) }}" method="post">
+                <input type="text" name="name" value="{{ item.name }}" />
+                <input type="text" name="quantity" value="{{ item.quantity or '' }}" placeholder="Кол-во" />
+                <input type="text" name="price" value="{{ item.price or '' }}" placeholder="Цена" />
+                <input type="text" name="line_total" value="{{ item.line_total or '' }}" placeholder="Сумма" />
+                <button class="secondary" type="submit">Обновить</button>
+              </form>
+              <form class="item-delete" action="{{ url_for('delete_item', receipt_id=receipt.id, item_id=item.id) }}" method="post">
+                <button class="ghost" type="submit">Удалить</button>
+              </form>
+            </div>
           {% endfor %}
         </div>
       {% else %}
         <p class="empty">Товары не распознаны, можно добавить их вручную в базе данных.</p>
       {% endif %}
+      <form class="item-add" action="{{ url_for('add_item', receipt_id=receipt.id) }}" method="post">
+        <input type="text" name="name" placeholder="Название товара" />
+        <input type="text" name="quantity" placeholder="Кол-во" />
+        <input type="text" name="price" placeholder="Цена" />
+        <input type="text" name="line_total" placeholder="Сумма" />
+        <button class="primary" type="submit">Добавить товар</button>
+      </form>
     </section>
 
     <section class="card">
