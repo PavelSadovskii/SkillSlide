@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Чек {{ receipt.id }}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}" />
+</head>
+<body>
+  <main class="container">
+    <header class="header">
+      <div>
+        <h1>{{ receipt.store_name }}</h1>
+        <p>Детали распознанного чека и возможность корректировки данных.</p>
+      </div>
+      <a class="secondary" href="{{ url_for('index') }}">Назад к списку</a>
+    </header>
+
+    <section class="card">
+      <h2>Данные чека</h2>
+      <form class="receipt-form" action="{{ url_for('update_receipt', receipt_id=receipt.id) }}" method="post">
+        <label>
+          Магазин
+          <input type="text" name="store_name" value="{{ receipt.store_name }}" />
+        </label>
+        <label>
+          Дата покупки
+          <input type="text" name="purchase_date" value="{{ receipt.purchase_date or '' }}" placeholder="ДД.ММ.ГГГГ" />
+        </label>
+        <label>
+          Итоговая сумма
+          <input type="text" name="total" value="{{ receipt.total or '' }}" placeholder="0.00" />
+        </label>
+        <button class="primary" type="submit">Сохранить</button>
+      </form>
+    </section>
+
+    <section class="card">
+      <h2>Товары</h2>
+      {% if receipt.items %}
+        <div class="items">
+          {% for item in receipt.items %}
+            <form class="item-row" action="{{ url_for('update_item', receipt_id=receipt.id, item_id=item.id) }}" method="post">
+              <input type="text" name="name" value="{{ item.name }}" />
+              <input type="text" name="quantity" value="{{ item.quantity or '' }}" placeholder="Кол-во" />
+              <input type="text" name="price" value="{{ item.price or '' }}" placeholder="Цена" />
+              <input type="text" name="line_total" value="{{ item.line_total or '' }}" placeholder="Сумма" />
+              <button class="secondary" type="submit">Обновить</button>
+            </form>
+          {% endfor %}
+        </div>
+      {% else %}
+        <p class="empty">Товары не распознаны, можно добавить их вручную в базе данных.</p>
+      {% endif %}
+    </section>
+
+    <section class="card">
+      <h2>Сырой текст</h2>
+      <pre class="raw-text">{{ receipt.raw_text }}</pre>
+    </section>
+  </main>
+</body>
+</html>

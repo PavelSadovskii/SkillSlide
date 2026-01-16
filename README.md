@@ -6,6 +6,28 @@ Users can upload lecture notes, slides, or PDFs, and SkillSlide automatically br
 
 ---
 
+## Receipt OCR prototype
+
+This repository also contains a lightweight prototype for receipt OCR. The app lets you upload a receipt image, extracts the text with Tesseract, parses items, and stores data (store name, date, total, line items) in SQLite. You can edit receipt fields and item lines directly in the UI to keep the database up to date.
+
+### Quick start
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python app.py
+```
+
+Then open <http://localhost:5000> and upload a receipt image.
+
+### Notes
+
+- The OCR expects Tesseract to be installed locally and accessible in your PATH.
+- The parser uses simple heuristics. Review and correct parsed items if needed.
+
+---
+
 ## Key Features
 
 - Multi-level explanations for each topic: school / student / technical
@@ -16,6 +38,3 @@ Users can upload lecture notes, slides, or PDFs, and SkillSlide automatically br
 - Modular design to support multiple subjects and languages
 
 SkillSlide combines the simplicity of a note-taking system, the interactivity of educational apps, and the power of AI to help users learn smarter and faster.
-
----
-

@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SkillSlide Receipts</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}" />
+</head>
+<body>
+  <main class="container">
+    <header class="header">
+      <div>
+        <h1>Распознавание чеков</h1>
+        <p>Загрузите чек, чтобы получить список товаров, сумму, магазин и дату покупки.</p>
+      </div>
+    </header>
+
+    <section class="card">
+      <form class="upload-form" action="{{ url_for('upload') }}" method="post" enctype="multipart/form-data">
+        <label class="file-input">
+          <input type="file" name="receipt" accept="image/*" required />
+          <span>Выбрать изображение чека</span>
+        </label>
+        <button class="primary" type="submit">Распознать чек</button>
+      </form>
+    </section>
+
+    <section class="card">
+      <h2>Последние чеки</h2>
+      {% if receipts %}
+        <ul class="receipt-list">
+          {% for receipt in receipts %}
+            <li>
+              <a href="{{ url_for('receipt_detail', receipt_id=receipt.id) }}">
+                <div class="receipt-title">{{ receipt.store_name }}</div>
+                <div class="receipt-meta">
+                  <span>Дата: {{ receipt.purchase_date or '—' }}</span>
+                  <span>Сумма: {{ receipt.total or '—' }}</span>
+                </div>
+              </a>
+            </li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <p class="empty">Пока нет загруженных чеков.</p>
+      {% endif %}
+    </section>
+  </main>
+</body>
+</html>
