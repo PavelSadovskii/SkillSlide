@@ -1,25 +1,21 @@
 from __future__ import annotations
 
+import cgi
 import csv
 import os
 import re
 import sqlite3
 from datetime import datetime
+from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import StringIO
 from pathlib import Path
-
-from flask import Flask, Response, redirect, render_template, request, url_for
-from PIL import Image
-import pytesseract
+from urllib.parse import parse_qs, quote, urlparse
 
 BASE_DIR = Path(__file__).parent
 DB_PATH = BASE_DIR / "data" / "receipts.db"
 UPLOAD_DIR = BASE_DIR / "data" / "uploads"
-
-app = Flask(__name__)
-app.config["UPLOAD_FOLDER"] = str(UPLOAD_DIR)
-app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024
-
+STATIC_DIR = BASE_DIR / "static"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS receipts (
@@ -41,7 +37,6 @@ CREATE TABLE IF NOT EXISTS items (
     FOREIGN KEY(receipt_id) REFERENCES receipts(id)
 );
 """
-
 
 DATE_PATTERNS = [
     re.compile(r"(?P<date>\d{2}[./]\d{2}[./]\d{4})"),
@@ -78,6 +73,12 @@ def init_db() -> None:
 
 
 def parse_money(value: str) -> float:
+    return float(value.replace(",", "."))
+
+
+def parse_optional_number(value: str | None) -> float | None:
+    if value is None or value == "":
+        return None
     return float(value.replace(",", "."))
 
 
@@ -125,9 +126,11 @@ def parse_receipt_text(text: str) -> ParsedReceipt:
     return receipt
 
 
-def ocr_image(file_path: Path) -> str:
-    image = Image.open(file_path).convert("RGB")
-    return pytesseract.image_to_string(image, lang="rus+eng")
+def extract_text_from_upload(filename: str, data: bytes) -> str:
+    extension = Path(filename).suffix.lower()
+    if extension in {".txt", ".csv"}:
+        return data.decode("utf-8", errors="ignore")
+    return ""
 
 
 def save_receipt(parsed: ParsedReceipt) -> int:
@@ -199,167 +202,411 @@ def fetch_receipt(receipt_id: int) -> dict | None:
     return data
 
 
-def parse_optional_number(value: str | None) -> float | None:
-    if value is None or value == "":
-        return None
-    return float(value.replace(",", "."))
+def redirect(location: str) -> tuple[int, dict[str, str], bytes]:
+    return HTTPStatus.SEE_OTHER, {"Location": location}, b""
 
 
-@app.route("/")
-def index() -> str:
-    receipts = fetch_receipts()
-    return render_template("index.html", receipts=receipts)
+def html_response(body: str) -> tuple[int, dict[str, str], bytes]:
+    return HTTPStatus.OK, {"Content-Type": "text/html; charset=utf-8"}, body.encode("utf-8")
 
 
-@app.route("/upload", methods=["POST"])
-def upload() -> str:
-    file = request.files.get("receipt")
-    if not file or not file.filename:
-        return redirect(url_for("index"))
-
-    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    filename = f"{datetime.utcnow().timestamp()}_{file.filename}"
-    file_path = UPLOAD_DIR / filename
-    file.save(file_path)
-
-    text = ocr_image(file_path)
-    parsed = parse_receipt_text(text)
-    receipt_id = save_receipt(parsed)
-    return redirect(url_for("receipt_detail", receipt_id=receipt_id))
+def not_found() -> tuple[int, dict[str, str], bytes]:
+    return HTTPStatus.NOT_FOUND, {"Content-Type": "text/plain; charset=utf-8"}, b"Not Found"
 
 
-@app.route("/receipt/<int:receipt_id>")
-def receipt_detail(receipt_id: int) -> str:
-    receipt = fetch_receipt(receipt_id)
-    if not receipt:
-        return redirect(url_for("index"))
-    return render_template("receipt.html", receipt=receipt)
+def render_index(receipts: list[dict]) -> str:
+    items_html = ""
+    if receipts:
+        list_items = []
+        for receipt in receipts:
+            list_items.append(
+                """
+                <li>
+                  <a href="/receipt/{receipt_id}">
+                    <div class="receipt-title">{store}</div>
+                    <div class="receipt-meta">
+                      <span>Дата: {date}</span>
+                      <span>Сумма: {total}</span>
+                    </div>
+                  </a>
+                </li>
+                """.format(
+                    receipt_id=receipt["id"],
+                    store=receipt["store_name"],
+                    date=receipt.get("purchase_date") or "—",
+                    total=receipt.get("total") or "—",
+                )
+            )
+        items_html = "<ul class=\"receipt-list\">{}</ul>".format("".join(list_items))
+    else:
+        items_html = "<p class=\"empty\">Пока нет загруженных чеков.</p>"
+
+    return """
+    <!DOCTYPE html>
+    <html lang="ru">
+    <head>
+      <meta charset="UTF-8" />
+      <meta name="viewport" content="width=device-width, initial-scale=1" />
+      <title>SkillSlide Receipts</title>
+      <link rel="stylesheet" href="/static/styles.css" />
+    </head>
+    <body>
+      <main class="container">
+        <header class="header">
+          <div>
+            <h1>Распознавание чеков</h1>
+            <p>Загрузите чек или текст, чтобы получить список товаров, сумму, магазин и дату покупки.</p>
+          </div>
+        </header>
+
+        <section class="card">
+          <form class="upload-form" action="/upload" method="post" enctype="multipart/form-data">
+            <label class="file-input">
+              <input type="file" name="receipt" accept="image/*,.txt,.csv" required />
+              <span>Выбрать файл чека</span>
+            </label>
+            <button class="primary" type="submit">Распознать чек</button>
+          </form>
+        </section>
+
+        <section class="card">
+          <h2>Последние чеки</h2>
+          {items_html}
+        </section>
+      </main>
+    </body>
+    </html>
+    """.format(items_html=items_html)
 
 
-@app.route("/receipt/<int:receipt_id>/update", methods=["POST"])
-def update_receipt(receipt_id: int) -> str:
-    store_name = request.form.get("store_name") or "Неизвестный магазин"
-    purchase_date = request.form.get("purchase_date") or None
-    total = request.form.get("total") or None
-    total_value = float(total.replace(",", ".")) if total else None
+def render_receipt(receipt: dict) -> str:
+    items_html = ""
+    if receipt["items"]:
+        rows = []
+        for item in receipt["items"]:
+            rows.append(
+                """
+                <div class="item-entry">
+                  <form class="item-row" action="/receipt/{receipt_id}/items/{item_id}/update" method="post">
+                    <input type="text" name="name" value="{name}" />
+                    <input type="text" name="quantity" value="{quantity}" placeholder="Кол-во" />
+                    <input type="text" name="price" value="{price}" placeholder="Цена" />
+                    <input type="text" name="line_total" value="{line_total}" placeholder="Сумма" />
+                    <button class="secondary" type="submit">Обновить</button>
+                  </form>
+                  <form class="item-delete" action="/receipt/{receipt_id}/items/{item_id}/delete" method="post">
+                    <button class="ghost" type="submit">Удалить</button>
+                  </form>
+                </div>
+                """.format(
+                    receipt_id=receipt["id"],
+                    item_id=item["id"],
+                    name=item["name"],
+                    quantity=item.get("quantity") or "",
+                    price=item.get("price") or "",
+                    line_total=item.get("line_total") or "",
+                )
+            )
+        items_html = "<div class=\"items\">{}</div>".format("".join(rows))
+    else:
+        items_html = "<p class=\"empty\">Товары не распознаны, можно добавить их вручную в базе данных.</p>"
 
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.execute(
-            """
-            UPDATE receipts
-            SET store_name = ?, purchase_date = ?, total = ?
-            WHERE id = ?
-            """,
-            (store_name, purchase_date, total_value, receipt_id),
-        )
-        conn.commit()
+    return """
+    <!DOCTYPE html>
+    <html lang="ru">
+    <head>
+      <meta charset="UTF-8" />
+      <meta name="viewport" content="width=device-width, initial-scale=1" />
+      <title>Чек {receipt_id}</title>
+      <link rel="stylesheet" href="/static/styles.css" />
+    </head>
+    <body>
+      <main class="container">
+        <header class="header">
+          <div>
+            <h1>{store_name}</h1>
+            <p>Детали распознанного чека и возможность корректировки данных.</p>
+          </div>
+          <div class="header-actions">
+            <a class="secondary" href="/receipt/{receipt_id}/export">Экспорт CSV</a>
+            <form action="/receipt/{receipt_id}/delete" method="post">
+              <button class="danger" type="submit">Удалить чек</button>
+            </form>
+            <a class="secondary" href="/">Назад к списку</a>
+          </div>
+        </header>
 
-    return redirect(url_for("receipt_detail", receipt_id=receipt_id))
+        <section class="card">
+          <h2>Данные чека</h2>
+          <form class="receipt-form" action="/receipt/{receipt_id}/update" method="post">
+            <label>
+              Магазин
+              <input type="text" name="store_name" value="{store_name}" />
+            </label>
+            <label>
+              Дата покупки
+              <input type="text" name="purchase_date" value="{purchase_date}" placeholder="ДД.ММ.ГГГГ" />
+            </label>
+            <label>
+              Итоговая сумма
+              <input type="text" name="total" value="{total}" placeholder="0.00" />
+            </label>
+            <button class="primary" type="submit">Сохранить</button>
+          </form>
+        </section>
 
+        <section class="card">
+          <h2>Товары</h2>
+          {items_html}
+          <form class="item-add" action="/receipt/{receipt_id}/items/add" method="post">
+            <input type="text" name="name" placeholder="Название товара" />
+            <input type="text" name="quantity" placeholder="Кол-во" />
+            <input type="text" name="price" placeholder="Цена" />
+            <input type="text" name="line_total" placeholder="Сумма" />
+            <button class="primary" type="submit">Добавить товар</button>
+          </form>
+        </section>
 
-@app.route("/receipt/<int:receipt_id>/items/<int:item_id>/update", methods=["POST"])
-def update_item(receipt_id: int, item_id: int) -> str:
-    name = request.form.get("name") or ""
-    quantity = request.form.get("quantity") or None
-    price = request.form.get("price") or None
-    line_total = request.form.get("line_total") or None
-
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.execute(
-            """
-            UPDATE items
-            SET name = ?, quantity = ?, price = ?, line_total = ?
-            WHERE id = ? AND receipt_id = ?
-            """,
-            (
-                name,
-                parse_optional_number(quantity),
-                parse_optional_number(price),
-                parse_optional_number(line_total),
-                item_id,
-                receipt_id,
-            ),
-        )
-        conn.commit()
-
-    return redirect(url_for("receipt_detail", receipt_id=receipt_id))
-
-
-@app.route("/receipt/<int:receipt_id>/items/add", methods=["POST"])
-def add_item(receipt_id: int) -> str:
-    name = request.form.get("name") or "Новый товар"
-    quantity = request.form.get("quantity") or None
-    price = request.form.get("price") or None
-    line_total = request.form.get("line_total") or None
-
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.execute(
-            """
-            INSERT INTO items (receipt_id, name, quantity, price, line_total)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (
-                receipt_id,
-                name,
-                parse_optional_number(quantity),
-                parse_optional_number(price),
-                parse_optional_number(line_total),
-            ),
-        )
-        conn.commit()
-
-    return redirect(url_for("receipt_detail", receipt_id=receipt_id))
-
-
-@app.route("/receipt/<int:receipt_id>/items/<int:item_id>/delete", methods=["POST"])
-def delete_item(receipt_id: int, item_id: int) -> str:
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.execute(
-            "DELETE FROM items WHERE id = ? AND receipt_id = ?",
-            (item_id, receipt_id),
-        )
-        conn.commit()
-    return redirect(url_for("receipt_detail", receipt_id=receipt_id))
-
-
-@app.route("/receipt/<int:receipt_id>/delete", methods=["POST"])
-def delete_receipt(receipt_id: int) -> str:
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.execute("DELETE FROM items WHERE receipt_id = ?", (receipt_id,))
-        conn.execute("DELETE FROM receipts WHERE id = ?", (receipt_id,))
-        conn.commit()
-    return redirect(url_for("index"))
-
-
-@app.route("/receipt/<int:receipt_id>/export")
-def export_receipt(receipt_id: int) -> Response:
-    receipt = fetch_receipt(receipt_id)
-    if not receipt:
-        return redirect(url_for("index"))
-
-    buffer = StringIO()
-    writer = csv.writer(buffer)
-    writer.writerow(["store_name", "purchase_date", "total", "item_name", "quantity", "price", "line_total"])
-    for item in receipt["items"]:
-        writer.writerow(
-            [
-                receipt["store_name"],
-                receipt.get("purchase_date") or "",
-                receipt.get("total") or "",
-                item.get("name") or "",
-                item.get("quantity") or "",
-                item.get("price") or "",
-                item.get("line_total") or "",
-            ]
-        )
-    csv_body = buffer.getvalue()
-    return Response(
-        csv_body,
-        mimetype="text/csv",
-        headers={"Content-Disposition": f"attachment; filename=receipt_{receipt_id}.csv"},
+        <section class="card">
+          <h2>Сырой текст</h2>
+          <pre class="raw-text">{raw_text}</pre>
+        </section>
+      </main>
+    </body>
+    </html>
+    """.format(
+        receipt_id=receipt["id"],
+        store_name=receipt["store_name"],
+        purchase_date=receipt.get("purchase_date") or "",
+        total=receipt.get("total") or "",
+        raw_text=receipt.get("raw_text") or "",
+        items_html=items_html,
     )
 
 
-if __name__ == "__main__":
+def parse_post_form(handler: BaseHTTPRequestHandler) -> dict[str, str | bytes]:
+    content_type = handler.headers.get("Content-Type", "")
+    if content_type.startswith("multipart/form-data"):
+        form = cgi.FieldStorage(
+            fp=handler.rfile,
+            headers=handler.headers,
+            environ={"REQUEST_METHOD": "POST", "CONTENT_TYPE": content_type},
+        )
+        data: dict[str, str | bytes] = {}
+        for key in form.keys():
+            field = form[key]
+            if isinstance(field, list):
+                field = field[0]
+            if field.filename:
+                data[key] = field.file.read()
+                data[f"{key}__filename"] = field.filename
+            else:
+                data[key] = field.value
+        return data
+
+    length = int(handler.headers.get("Content-Length", "0"))
+    body = handler.rfile.read(length)
+    form = parse_qs(body.decode("utf-8"), keep_blank_values=True)
+    return {key: values[0] for key, values in form.items()}
+
+
+class ReceiptHandler(BaseHTTPRequestHandler):
+    def do_GET(self) -> None:
+        parsed = urlparse(self.path)
+        path = parsed.path
+
+        if path == "/":
+            body = render_index(fetch_receipts())
+            self.respond(*html_response(body))
+            return
+
+        if path.startswith("/static/"):
+            file_path = STATIC_DIR / path.replace("/static/", "")
+            if file_path.exists() and file_path.is_file():
+                content = file_path.read_bytes()
+                self.respond(
+                    HTTPStatus.OK,
+                    {"Content-Type": "text/css; charset=utf-8"},
+                    content,
+                )
+                return
+            self.respond(*not_found())
+            return
+
+        if path.startswith("/receipt/"):
+            parts = path.strip("/").split("/")
+            if len(parts) >= 2 and parts[1].isdigit():
+                receipt_id = int(parts[1])
+                if len(parts) == 3 and parts[2] == "export":
+                    receipt = fetch_receipt(receipt_id)
+                    if not receipt:
+                        self.respond(*redirect("/"))
+                        return
+                    buffer = StringIO()
+                    writer = csv.writer(buffer)
+                    writer.writerow([
+                        "store_name",
+                        "purchase_date",
+                        "total",
+                        "item_name",
+                        "quantity",
+                        "price",
+                        "line_total",
+                    ])
+                    for item in receipt["items"]:
+                        writer.writerow(
+                            [
+                                receipt["store_name"],
+                                receipt.get("purchase_date") or "",
+                                receipt.get("total") or "",
+                                item.get("name") or "",
+                                item.get("quantity") or "",
+                                item.get("price") or "",
+                                item.get("line_total") or "",
+                            ]
+                        )
+                    content = buffer.getvalue().encode("utf-8")
+                    filename = f"receipt_{receipt_id}.csv"
+                    self.respond(
+                        HTTPStatus.OK,
+                        {
+                            "Content-Type": "text/csv; charset=utf-8",
+                            "Content-Disposition": f"attachment; filename={quote(filename)}",
+                        },
+                        content,
+                    )
+                    return
+
+                receipt = fetch_receipt(receipt_id)
+                if not receipt:
+                    self.respond(*redirect("/"))
+                    return
+                body = render_receipt(receipt)
+                self.respond(*html_response(body))
+                return
+
+        self.respond(*not_found())
+
+    def do_POST(self) -> None:
+        parsed = urlparse(self.path)
+        path = parsed.path
+        form = parse_post_form(self)
+
+        if path == "/upload":
+            file_data = form.get("receipt")
+            filename = form.get("receipt__filename")
+            if isinstance(file_data, bytes) and isinstance(filename, str):
+                safe_name = "_".join(filename.split())
+                stored_name = f"{datetime.utcnow().timestamp()}_{safe_name}"
+                file_path = UPLOAD_DIR / stored_name
+                file_path.write_bytes(file_data)
+                raw_text = extract_text_from_upload(filename, file_data)
+                parsed_receipt = parse_receipt_text(raw_text)
+                receipt_id = save_receipt(parsed_receipt)
+                self.respond(*redirect(f"/receipt/{receipt_id}"))
+                return
+            self.respond(*redirect("/"))
+            return
+
+        if path.startswith("/receipt/"):
+            parts = path.strip("/").split("/")
+            if len(parts) >= 2 and parts[1].isdigit():
+                receipt_id = int(parts[1])
+
+                if len(parts) == 3 and parts[2] == "update":
+                    store_name = (form.get("store_name") or "Неизвестный магазин").strip()
+                    purchase_date = (form.get("purchase_date") or "").strip() or None
+                    total_value = parse_optional_number(form.get("total") or None)
+                    with sqlite3.connect(DB_PATH) as conn:
+                        conn.execute(
+                            """
+                            UPDATE receipts
+                            SET store_name = ?, purchase_date = ?, total = ?
+                            WHERE id = ?
+                            """,
+                            (store_name, purchase_date, total_value, receipt_id),
+                        )
+                        conn.commit()
+                    self.respond(*redirect(f"/receipt/{receipt_id}"))
+                    return
+
+                if len(parts) == 3 and parts[2] == "delete":
+                    with sqlite3.connect(DB_PATH) as conn:
+                        conn.execute("DELETE FROM items WHERE receipt_id = ?", (receipt_id,))
+                        conn.execute("DELETE FROM receipts WHERE id = ?", (receipt_id,))
+                        conn.commit()
+                    self.respond(*redirect("/"))
+                    return
+
+                if len(parts) == 4 and parts[2] == "items" and parts[3] == "add":
+                    name = (form.get("name") or "Новый товар").strip()
+                    quantity = parse_optional_number(form.get("quantity") or None)
+                    price = parse_optional_number(form.get("price") or None)
+                    line_total = parse_optional_number(form.get("line_total") or None)
+                    with sqlite3.connect(DB_PATH) as conn:
+                        conn.execute(
+                            """
+                            INSERT INTO items (receipt_id, name, quantity, price, line_total)
+                            VALUES (?, ?, ?, ?, ?)
+                            """,
+                            (receipt_id, name, quantity, price, line_total),
+                        )
+                        conn.commit()
+                    self.respond(*redirect(f"/receipt/{receipt_id}"))
+                    return
+
+                if len(parts) == 5 and parts[2] == "items" and parts[3].isdigit():
+                    item_id = int(parts[3])
+                    action = parts[4]
+
+                    if action == "update":
+                        name = (form.get("name") or "").strip()
+                        quantity = parse_optional_number(form.get("quantity") or None)
+                        price = parse_optional_number(form.get("price") or None)
+                        line_total = parse_optional_number(form.get("line_total") or None)
+                        with sqlite3.connect(DB_PATH) as conn:
+                            conn.execute(
+                                """
+                                UPDATE items
+                                SET name = ?, quantity = ?, price = ?, line_total = ?
+                                WHERE id = ? AND receipt_id = ?
+                                """,
+                                (name, quantity, price, line_total, item_id, receipt_id),
+                            )
+                            conn.commit()
+                        self.respond(*redirect(f"/receipt/{receipt_id}"))
+                        return
+
+                    if action == "delete":
+                        with sqlite3.connect(DB_PATH) as conn:
+                            conn.execute(
+                                "DELETE FROM items WHERE id = ? AND receipt_id = ?",
+                                (item_id, receipt_id),
+                            )
+                            conn.commit()
+                        self.respond(*redirect(f"/receipt/{receipt_id}"))
+                        return
+
+        self.respond(*not_found())
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
+    def respond(self, status: int, headers: dict[str, str], body: bytes) -> None:
+        self.send_response(status)
+        for key, value in headers.items():
+            self.send_header(key, value)
+        self.end_headers()
+        self.wfile.write(body)
+
+
+def run_server() -> None:
     init_db()
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "5000")), debug=True)
+    port = int(os.environ.get("PORT", "5000"))
+    server = ThreadingHTTPServer(("0.0.0.0", port), ReceiptHandler)
+    print(f"Server running on http://0.0.0.0:{port}")
+    server.serve_forever()
+
+
+if __name__ == "__main__":
+    run_server()

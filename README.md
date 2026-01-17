@@ -8,23 +8,20 @@ Users can upload lecture notes, slides, or PDFs, and SkillSlide automatically br
 
 ## Receipt OCR prototype
 
-This repository also contains a lightweight prototype for receipt OCR. The app lets you upload a receipt image, extracts the text with Tesseract, parses items, and stores data (store name, date, total, line items) in SQLite. You can edit receipt fields, add/remove items, and export data to CSV directly in the UI to keep the database up to date.
+This repository also contains a lightweight prototype for receipt parsing. The app lets you upload a receipt file, parses items, and stores data (store name, date, total, line items) in SQLite. You can edit receipt fields, add/remove items, and export data to CSV directly in the UI to keep the database up to date.
 
 ### Quick start
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
 python app.py
 ```
 
-Then open <http://localhost:5000> and upload a receipt image.
+Then open <http://localhost:5000> and upload a receipt file.
 
 ### Notes
 
-- The OCR expects Tesseract to be installed locally and accessible in your PATH.
-- The parser uses simple heuristics. Review and correct parsed items if needed.
+- The built-in parser uses simple heuristics and works best with text or CSV receipts.
+- Image OCR is not bundled in this offline-friendly version. If you need OCR, integrate Tesseract or a cloud OCR service and adapt `extract_text_from_upload` in `app.py`.
 
 ---
 
