@@ -5,6 +5,8 @@ import csv
 import os
 import re
 import sqlite3
+import subprocess
+from shutil import which
 from datetime import datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -126,11 +128,25 @@ def parse_receipt_text(text: str) -> ParsedReceipt:
     return receipt
 
 
-def extract_text_from_upload(filename: str, data: bytes) -> str:
+def extract_text_from_upload(filename: str, data: bytes) -> tuple[str, str | None]:
     extension = Path(filename).suffix.lower()
     if extension in {".txt", ".csv"}:
-        return data.decode("utf-8", errors="ignore")
-    return ""
+        return data.decode("utf-8", errors="ignore"), None
+    if extension in {".png", ".jpg", ".jpeg", ".bmp", ".tiff"}:
+        if not which("tesseract"):
+            return "", "OCR недоступен: установите tesseract-ocr и добавьте его в PATH."
+        try:
+            completed = subprocess.run(
+                ["tesseract", "-", "stdout", "-l", "rus+eng"],
+                input=data,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=True,
+            )
+            return completed.stdout.decode("utf-8", errors="ignore"), None
+        except subprocess.CalledProcessError:
+            return "", "OCR не удалось выполнить для загруженного изображения."
+    return "", "Формат файла не поддерживается для распознавания."
 
 
 def save_receipt(parsed: ParsedReceipt) -> int:
@@ -500,8 +516,18 @@ class ReceiptHandler(BaseHTTPRequestHandler):
                 stored_name = f"{datetime.utcnow().timestamp()}_{safe_name}"
                 file_path = UPLOAD_DIR / stored_name
                 file_path.write_bytes(file_data)
-                raw_text = extract_text_from_upload(filename, file_data)
-                parsed_receipt = parse_receipt_text(raw_text)
+                raw_text, notice = extract_text_from_upload(filename, file_data)
+                if raw_text:
+                    parsed_receipt = parse_receipt_text(raw_text)
+                    if notice:
+                        parsed_receipt.raw_text = f"{parsed_receipt.raw_text}\n\n{notice}"
+                else:
+                    parsed_receipt = ParsedReceipt(
+                        "OCR недоступен",
+                        None,
+                        None,
+                        notice or "Не удалось распознать текст из файла.",
+                    )
                 receipt_id = save_receipt(parsed_receipt)
                 self.respond(*redirect(f"/receipt/{receipt_id}"))
                 return

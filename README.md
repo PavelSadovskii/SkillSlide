@@ -21,7 +21,7 @@ Then open <http://localhost:5000> and upload a receipt file.
 ### Notes
 
 - The built-in parser uses simple heuristics and works best with text or CSV receipts.
-- Image OCR is not bundled in this offline-friendly version. If you need OCR, integrate Tesseract or a cloud OCR service and adapt `extract_text_from_upload` in `app.py`.
+- Image OCR uses the `tesseract` binary if installed and available in `PATH` (e.g. install `tesseract-ocr` on Linux or Tesseract on macOS/Windows). If it is missing, the app will save a notice in the receipt text.
 
 ---
 
